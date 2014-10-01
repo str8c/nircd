@@ -265,6 +265,20 @@ static bool inchannelrange(CLIENT *cl, CLIENT *c, int range)
     return 0;
 }
 
+static bool inchannel(CLIENT *cl, CHANNEL *ch) {
+    int i;
+    uint8_t ch_id;
+
+    ch_id = (ch - channel);
+    for(i = 0; i != cl->nchannel; i++) {
+        if(cl->channel[i] == ch_id) {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 static void cl_cmd(CLIENT *cl, char *cmd)
 {
     int msg, len, i, j;
@@ -365,6 +379,7 @@ static void cl_cmd(CLIENT *cl, char *cmd)
     } else if(msg == MSG_JOIN) {
         while((a = channel_name(args))) {
             if(cl->nchannel == sizeof(cl->channel)) {
+                /* joined max channels */
                 return;
             }
 
@@ -375,6 +390,10 @@ static void cl_cmd(CLIENT *cl, char *cmd)
 
             ch = findchannel(name);
             if(ch) {
+                if(inchannel(cl, ch)) {
+                    continue;
+                }
+
                 if(!addclient(ch, id)) {
                     continue;
                 }
