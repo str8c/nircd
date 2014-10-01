@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
 #include <sys/epoll.h>
@@ -11,7 +12,7 @@
 #include <dlfcn.h>
 
 #define PORT 6667
-#define PING_TIMEOUT 10
+#define PING_INTERVAL 10
 #define HOST "str8c.org"
 
 typedef struct {
@@ -40,10 +41,10 @@ static struct {
 
 static const struct itimerspec itimer = {
     .it_interval = {
-        .tv_sec = PING_TIMEOUT,
+        .tv_sec = PING_INTERVAL,
     },
     .it_value = {
-        .tv_sec = PING_TIMEOUT,
+        .tv_sec = PING_INTERVAL,
     },
 };
 
@@ -215,13 +216,18 @@ static int _match(const char *word, const char **list, int i)
     return -1;
 }
 
+static bool isvalid(char c)
+{
+    return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_');
+}
+
 static char* channel_name(char *p)
 {
     if(*p != '#') {
         return NULL;
     }
 
-    while(isalnum(*(++p))); //USE CUSTOM FUNCTION
+    while(isvalid(*(++p)));
     *p = 0;
 
     while(p++, *p && *p != '#');
@@ -229,11 +235,42 @@ static char* channel_name(char *p)
     return p;
 }
 
+static bool validnick(char *p)
+{
+    if(!*p) { //empty nick
+        return 0;
+    }
+
+    do {
+        if(!isvalid(*p)) {
+            return 0;
+        }
+    } while(*(++p));
+
+    return 1;
+}
+
+static bool inchannelrange(CLIENT *cl, CLIENT *c, int range)
+{
+    int i, j;
+
+    for(i = 0; i != range; i++) {
+        for(j = 0; j != c->nchannel; j++) {
+            if(c->channel[j] == cl->channel[i]) {
+                return 1;
+            }
+        }
+    }
+
+    return 0;
+}
+
 static void cl_cmd(CLIENT *cl, char *cmd)
 {
-    int msg, len, i;
+    int msg, len, i, j;
     uint16_t id;
-    char *args, *a;
+    char *args, *a, *name;
+    void *tmp;
     CHANNEL *ch;
     CLIENT *c;
     char response[1024], *r;
@@ -283,7 +320,7 @@ static void cl_cmd(CLIENT *cl, char *cmd)
             args[sizeof(cl->name) - 1] = 0;
         }
 
-        if(!args[0]) { /* empty nick */
+        if(!validnick(args)) {
             return;
         }
 
@@ -298,16 +335,25 @@ static void cl_cmd(CLIENT *cl, char *cmd)
         }
 
         if(cl->name[0]) { /* not first time setting name */
-            //only send to those who need to know.. (not GLOBAL!!)
             len = sprintf(response, ":%s NICK %s\n", cl->name, args);
-            for(c = client, i = 0; i != nclient; c++) {
-                if(c->sock) {
+            for(i = 0; i != cl->nchannel; i++) {
+                ch = &channel[cl->channel[i]];
+                for(j = 0; j != ch->nclient; j++) {
+                    c = &client[ch->client[j]];
+
+                    /* check if c is in one of the channels already notified (cl->channel[0-i]) */
+                    if(inchannelrange(cl, c, i)) {
+                        continue;
+                    }
+
                     send(c->sock, response, len, 0);
-                    i++;
                 }
             }
         } else {
-            len = sprintf(response, ":" HOST " 372 %s :Welcome %s. There are %u users in %u channels\n:" HOST " 376 %s :New users join channel #main\n", args, args, nclient, nchannel, args);
+            len = sprintf(response,
+                        ":" HOST " 001 %s :Welcome \"%s\". There are %u users in %u channels\n"
+                        ":" HOST " 376 %s :New users join channel #main\n",
+                        args, args, nclient, nchannel, args);
             send(cl->sock, response, len, 0);
         }
 
@@ -318,15 +364,27 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 return;
             }
 
-            ch = findchannel(args);
+            name = args;
+            args = a;
+
+            printf("join: %s\n", name);
+
+            ch = findchannel(name);
             if(ch) {
-                addclient(ch, id);
+                if(!addclient(ch, id)) {
+                    continue;
+                }
             } else {
+                tmp = malloc(sizeof(*ch->client));
+                if(!tmp) {
+                    continue;
+                }
+
                 ch = newchannel();
                 ch->nclient = 1;
-                ch->client = malloc(sizeof(*ch->client));
+                ch->client = tmp;
                 ch->client[0] = id;
-                strncpy(ch->name, args, sizeof(ch->name) - 1);
+                strncpy(ch->name, name, sizeof(ch->name) - 1);
             }
 
             cl->channel[cl->nchannel++] = (ch - channel);
@@ -350,8 +408,6 @@ static void cl_cmd(CLIENT *cl, char *cmd)
             r += len;
 
             send(cl->sock, response, r - response, 0);
-
-            args = a;
         }
     } else if(msg == MSG_PART) {
         a = strchr(args, ' ');
@@ -372,7 +428,7 @@ static void cl_cmd(CLIENT *cl, char *cmd)
             }
         }
     } else if(msg == MSG_PING) {
-        len = sprintf(response, "PONG %s\n", args);
+        len = sprintf(response, ":" HOST " PONG %s\n", args);
         send(cl->sock, response, len, 0);
     }
 }
