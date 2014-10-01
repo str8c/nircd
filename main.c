@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
@@ -11,7 +12,7 @@
 
 #define PORT 6667
 #define PING_TIMEOUT 10
-#define HOST "irc.str8c.org"
+#define HOST "str8c.org"
 
 typedef struct {
     int sock;
@@ -50,6 +51,7 @@ enum {
     MSG_NICK,
     MSG_JOIN,
     MSG_PART,
+    MSG_PING,
     MSG_PRIV,
     MSG_QUIT,
 };
@@ -58,6 +60,7 @@ static const char *messages[] = {
     "NICK",
     "JOIN",
     "PART",
+    "PING",
     "PRIVMSG",
     "QUIT",
 };
@@ -212,6 +215,20 @@ static int _match(const char *word, const char **list, int i)
     return -1;
 }
 
+static char* channel_name(char *p)
+{
+    if(*p != '#') {
+        return NULL;
+    }
+
+    while(isalnum(*(++p))); //USE CUSTOM FUNCTION
+    *p = 0;
+
+    while(p++, *p && *p != '#');
+
+    return p;
+}
+
 static void cl_cmd(CLIENT *cl, char *cmd)
 {
     int msg, len, i;
@@ -280,7 +297,7 @@ static void cl_cmd(CLIENT *cl, char *cmd)
             return;
         }
 
-        if(cl->nchannel) {
+        if(cl->name[0]) { /* not first time setting name */
             //only send to those who need to know.. (not GLOBAL!!)
             len = sprintf(response, ":%s NICK %s\n", cl->name, args);
             for(c = client, i = 0; i != nclient; c++) {
@@ -290,48 +307,52 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 }
             }
         } else {
-            len = sprintf(response, ":" HOST " 001 %s :Welcome. There are %u users in %u channels\n", args, nclient, nchannel);
+            len = sprintf(response, ":" HOST " 372 %s :Welcome %s. There are %u users in %u channels\n:" HOST " 376 %s :New users join channel #main\n", args, args, nclient, nchannel, args);
             send(cl->sock, response, len, 0);
         }
 
         strcpy(cl->name, args);
     } else if(msg == MSG_JOIN) {
-        if(cl->nchannel == sizeof(cl->channel)) {
-            return;
-        }
-
-        ch = findchannel(args);
-        if(ch) {
-            addclient(ch, id);
-        } else {
-            ch = newchannel();
-            ch->nclient = 1;
-            ch->client = malloc(sizeof(*ch->client));
-            ch->client[0] = id;
-            strncpy(ch->name, args, sizeof(ch->name) - 1);
-        }
-
-        cl->channel[cl->nchannel++] = (ch - channel);
-
-        len = sprintf(response, ":%s JOIN %s\n", cl->name, ch->name);
-        r = response + len;
-        r += sprintf(r, ":" HOST " 353 %s @ %s :%s", cl->name, ch->name, cl->name);
-
-        for(i = 0; i != ch->nclient; i++) {
-            c = &client[ch->client[i]];
-            if(c == cl) {
-                continue;
+        while((a = channel_name(args))) {
+            if(cl->nchannel == sizeof(cl->channel)) {
+                return;
             }
-            r += sprintf(r, " %s", c->name);
 
-            send(c->sock, response, len, 0);
+            ch = findchannel(args);
+            if(ch) {
+                addclient(ch, id);
+            } else {
+                ch = newchannel();
+                ch->nclient = 1;
+                ch->client = malloc(sizeof(*ch->client));
+                ch->client[0] = id;
+                strncpy(ch->name, args, sizeof(ch->name) - 1);
+            }
+
+            cl->channel[cl->nchannel++] = (ch - channel);
+
+            len = sprintf(response, ":%s JOIN %s\n", cl->name, ch->name);
+            r = response + len;
+            r += sprintf(r, ":" HOST " 353 %s @ %s :%s", cl->name, ch->name, cl->name);
+
+            for(i = 0; i != ch->nclient; i++) {
+                c = &client[ch->client[i]];
+                if(c == cl) {
+                    continue;
+                }
+                r += sprintf(r, " %s", c->name);
+
+                send(c->sock, response, len, 0);
+            }
+            *r++ = '\n';
+
+            len = sprintf(r, ":" HOST " 366 %s %s :End of NAMES list.\n", cl->name, ch->name);
+            r += len;
+
+            send(cl->sock, response, r - response, 0);
+
+            args = a;
         }
-        *r++ = '\n';
-
-        len = sprintf(r, ":" HOST " 366 %s %s :End of NAMES list.\n", cl->name, ch->name);
-        r += len;
-
-        send(cl->sock, response, r - response, 0);
     } else if(msg == MSG_PART) {
         a = strchr(args, ' ');
         if(!a) {
@@ -350,8 +371,9 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 break;
             }
         }
-    } else {
-
+    } else if(msg == MSG_PING) {
+        len = sprintf(response, "PONG %s\n", args);
+        send(cl->sock, response, len, 0);
     }
 }
 
