@@ -336,6 +336,10 @@ static void cl_cmd(CLIENT *cl, char *cmd)
 
         if(cl->name[0]) { /* not first time setting name */
             len = sprintf(response, ":%s NICK %s\n", cl->name, args);
+            if(!cl->nchannel) {
+                send(cl->sock, response, len, 0);
+            }
+
             for(i = 0; i != cl->nchannel; i++) {
                 ch = &channel[cl->channel[i]];
                 for(j = 0; j != ch->nclient; j++) {
