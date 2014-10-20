@@ -602,7 +602,7 @@ int main(int argc, char *argv[])
 
                 len -= (start - buf);
                 if(len) { /* data remaining */
-                    if(cl->rlen + len > 1024) { /* higher than limit, ignore */
+                    if(cl->rlen + len > 512) { /* higher than limit, ignore */
                         continue;
                     }
 
