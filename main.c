@@ -11,9 +11,15 @@
 #include <arpa/inet.h>
 #include <dlfcn.h>
 
-#define PORT 6667
 #define PING_INTERVAL 10
-#define HOST "str8c.org"
+
+#ifndef PORT
+#define PORT 6667
+#endif
+
+#ifndef HOST
+#define HOST "127.0.0.1"
+#endif
 
 typedef struct {
     int sock;
@@ -49,22 +55,14 @@ static const struct itimerspec itimer = {
 };
 
 enum {
-    MSG_NICK,
-    MSG_JOIN,
-    MSG_PART,
-    MSG_PING,
-    MSG_PRIV,
-    MSG_QUIT,
+    MSG_NICK, MSG_JOIN, MSG_PART, MSG_PING, MSG_PRIV, MSG_QUIT,
 };
 
 static const char *messages[] = {
-    "NICK",
-    "JOIN",
-    "PART",
-    "PING",
-    "PRIVMSG",
-    "QUIT",
+    "NICK", "JOIN", "PART", "PING", "PRIVMSG", "QUIT",
 };
+
+static const char ping[] = "PING :0\n";
 
 static int nclient, nchannel;
 static CLIENT client[65536], *fclient = client;
@@ -100,7 +98,7 @@ static CHANNEL* findchannel(char *name)
     return NULL;
 }
 
-static _Bool addclient(CHANNEL *ch, uint16_t id)
+static bool addclient(CHANNEL *ch, uint16_t id)
 {
     uint16_t *tmp;
 
@@ -491,7 +489,7 @@ int main(int argc, char *argv[])
     struct epoll_event events[16], *ev, *ev_last;
     CLIENT *cl;
     char buf[256];
-    char *s, *ss;
+    char *start, *end, *data;
 
     sock = tcp_init();
     if(sock < 0) {
@@ -520,6 +518,7 @@ int main(int argc, char *argv[])
 
     do {
         if((n = epoll_wait(efd, events, 16, -1)) < 0) {
+            printf("epoll error\n");
             break;
         }
 
@@ -548,7 +547,6 @@ int main(int argc, char *argv[])
                             if(cl->pinged) {
                                 killclient(cl);
                             } else {
-                                static const char ping[] = "PING :0\n";
                                 send(cl->sock, ping, sizeof(ping) - 1, 0);
                                 cl->pinged = 1;
                             }
@@ -569,39 +567,51 @@ int main(int argc, char *argv[])
                     continue;
                 }
 
-                /* clean this shit up */
-                ss = buf;
-                while((s = strchr(ss, '\n'))) {
+                start = buf;
+                while((end = strchr(start, '\n'))) { /* find line breaks */
                     if(cl->rlen) {
-                        *s++ = 0;
-                        cl->data = realloc(cl->data, cl->rlen + (s - ss));
-                        memcpy(cl->data + cl->rlen, ss, (s - ss));
-                        cl->rlen += (s - ss);
-                        cl->data[cl->rlen] = 0;
+                        n = (end - start);
+                        *end = 0; /* null terminate */
+                        data = realloc(cl->data, cl->rlen + n + 1); /* +1 for null terminator */
+                        if(!data) {
+                            free(cl->data);
+                            goto SKIP;
+                        }
+                        memcpy(data + cl->rlen, start, n + 1);
+                        n += cl->rlen;
 
-                        if(cl->data[cl->rlen - 1] == '\r') {
-                            cl->data[cl->rlen - 1] = 0;
+                        if(data[n - 1] == '\r') { /* remove windows line break */
+                            data[n - 1] = 0;
                         }
 
-                        cl_cmd(cl, cl->data);
-
-                        free(cl->data); cl->data = NULL;
+                        cl_cmd(cl, data);
+                        free(data);
+                    SKIP:
+                        cl->data = NULL;
                         cl->rlen = 0;
                     } else {
-                        if(s != ss && *(s - 1) == '\r') {
-                            *(s - 1) = 0;
+                        if(end != start && *(end - 1) == '\r') {
+                            *(end - 1) = 0;
                         }
-                        *s++ = 0;
-                        cl_cmd(cl, ss);
+                        *end = 0; /* null terminate */
+                        cl_cmd(cl, start);
                     }
-                    ss = s;
+                    start = end + 1;
                 }
 
-                /* todo: add a limit, etc */
-                len -= (ss - buf);
+                len -= (start - buf);
                 if(len) { /* data remaining */
-                    cl->data = realloc(cl->data, cl->rlen + len);
-                    memcpy(cl->data + cl->rlen, ss, len);
+                    if(cl->rlen + len > 1024) { /* higher than limit, ignore */
+                        continue;
+                    }
+
+                    data = realloc(cl->data, cl->rlen + len);
+                    if(!data) { /* realloc failure, ignore */
+                        continue;
+                    }
+
+                    memcpy(data + cl->rlen, start, len);
+                    cl->data = data;
                     cl->rlen += len;
                 }
             }
