@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <ctype.h>
+#define __USE_GNU /* required for accept4() */
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/timerfd.h>
@@ -527,7 +528,7 @@ int main(int argc, char *argv[])
         do {
             if(ev->data.fd < 0) {
                 if(ev->data.fd == -1) { /* listening socket event */
-                    csock = accept(sock, (struct sockaddr*)&addr, &addrlen);
+                    csock = accept4(sock, (struct sockaddr*)&addr, &addrlen, SOCK_NONBLOCK);
                     if(csock < 0) {
                         printf("accept failed\n");
                         continue;
