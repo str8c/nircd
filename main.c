@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <dlfcn.h>
+#include <errno.h>
 
 #define PING_INTERVAL 10
 
@@ -519,8 +520,8 @@ int main(int argc, char *argv[])
 
     do {
         if((n = epoll_wait(efd, events, 16, -1)) < 0) {
-            printf("epoll error\n");
-            break;
+            printf("epoll error %u\n", errno);
+            continue;
         }
 
         ev = events;
