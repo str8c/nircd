@@ -175,6 +175,10 @@ static CLIENT* newclient(void)
 {
     CLIENT *cl;
 
+    if(nclient == sizeof(client) / sizeof(*client)) {
+        return NULL;
+    }
+
     cl = fclient;
     while((++fclient)->sock != 0); //NOTE: should use -1 as invalid value, but using 0 because lazy
     nclient++;
@@ -188,6 +192,10 @@ static void killclient(CLIENT *cl)
     uint16_t id;
     CHANNEL *ch;
     char buf[1024];
+
+    if(cl < fclient) {
+        fclient = cl;
+    }
 
     id = (cl - client);
     close(cl->sock); cl->sock = 0;
@@ -519,7 +527,7 @@ int main(int argc, char *argv[])
     addrlen = 0;
 
     do {
-        if((n = epoll_wait(efd, events, 16, -1)) < 0) {
+        if((n = epoll_wait(efd, events, 1, -1)) < 0) { //TODO: better logic so this doesn't have to be 1
             printf("epoll error %u\n", errno);
             continue;
         }
@@ -536,6 +544,10 @@ int main(int argc, char *argv[])
                     }
 
                     cl = newclient();
+                    if(!cl) {
+                        close(csock);
+                        continue;
+                    }
                     cl->sock = csock;
 
                     ev->events = EPOLLIN;// | EPOLLET;
