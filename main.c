@@ -324,6 +324,15 @@ static void cl_cmd(CLIENT *cl, char *cmd)
         }
         *a++ = 0;
 
+        if(*args != '#') {
+            c = findclient(args);
+            if(c) {
+                len = sprintf(response, ":%s PRIVMSG %s %s\n", cl->name, c->name, a);
+                send(c->sock, response, len, 0);
+            }
+            return;
+        }
+
         ch = findchannel(args);
         if(!ch) {
             return;
