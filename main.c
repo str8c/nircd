@@ -139,7 +139,7 @@ static void removeclient(CHANNEL *ch, uint16_t id)
     for(i = 0; i != ch->nclient; i++) {
         if(ch->client[i] == id) {
             ch->nclient--;
-            memcpy(&ch->client[i], &ch->client[i + 1], (ch->nclient - i) * sizeof(*ch->client));
+            memmove(&ch->client[i], &ch->client[i + 1], (ch->nclient - i) * sizeof(*ch->client));
             return;
         }
     }
