@@ -76,6 +76,10 @@ static CHANNEL* newchannel(void)
 {
     CHANNEL *ch;
 
+    if(nchannel == sizeof(channel) / sizeof(*channel)) {
+        return NULL;
+    }
+
     ch = fchannel;
     while((++fchannel)->nclient != 0);
     nchannel++;
@@ -127,6 +131,7 @@ static void removeclient(CHANNEL *ch, uint16_t id)
 
         ch->nclient = 0;
         free(ch->client);
+        fchannel = ch;
         nchannel--;
         return;
     }
@@ -421,6 +426,10 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 }
 
                 ch = newchannel();
+                if(!ch) {
+                    continue;
+                }
+
                 ch->nclient = 1;
                 ch->client = tmp;
                 ch->client[0] = id;
@@ -503,9 +512,9 @@ static int tcp_init(void)
 int main(int argc, char *argv[])
 {
     int efd, tfd, sock, n, csock, len, ncl;
+    struct epoll_event events[16], *ev, *ev_last;
     socklen_t addrlen;
     uint64_t exp;
-    struct epoll_event events[16], *ev, *ev_last;
     CLIENT *cl;
     char buf[256];
     char *start, *end, *data;
