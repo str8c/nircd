@@ -23,6 +23,10 @@
 #define HOST "127.0.0.1"
 #endif
 
+#ifndef MOTD
+#define MOTD "New users join channel #main"
+#endif
+
 /* notes:
 -using 0 as no-socket value instead of ~0
 */
@@ -398,7 +402,7 @@ static void cl_cmd(CLIENT *cl, char *cmd)
         } else {
             len = sprintf(response,
                         ":" HOST " 001 %s :Welcome \"%s\". There are %u users in %u channels\n"
-                        ":" HOST " 376 %s :New users join channel #main\n",
+                        ":" HOST " 376 %s :" MOTD "\n",
                         args, args, nclient, nchannel, args);
             send(cl->sock, response, len, 0);
         }
