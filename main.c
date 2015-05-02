@@ -23,6 +23,10 @@
 #define HOST "127.0.0.1"
 #endif
 
+/* notes:
+-using 0 as no-socket value instead of ~0
+*/
+
 typedef struct {
     int sock;
     uint16_t rlen;
@@ -66,9 +70,12 @@ static const char *messages[] = {
 
 static const char ping[] = "PING :0\n";
 
+#define MAX_CLIENT 0x10000
+#define MAX_CHANNEL 0x100
+
 static int nclient, nchannel;
-static CLIENT client[65536], *fclient = client;
-static CHANNEL channel[256], *fchannel = channel;
+static CLIENT client[MAX_CLIENT], *free_client = client;
+static CHANNEL channel[MAX_CHANNEL], *free_channel = channel;
 
 static int one = 1;
 
@@ -76,27 +83,26 @@ static CHANNEL* newchannel(void)
 {
     CHANNEL *ch;
 
-    if(nchannel == sizeof(channel) / sizeof(*channel)) {
+    if (nchannel == MAX_CHANNEL)
         return NULL;
-    }
 
-    ch = fchannel;
-    while((++fchannel)->nclient != 0);
+    ch = free_channel;
     nchannel++;
+
+    while ((++free_channel)->nclient);
 
     return ch;
 }
 
-static CHANNEL* findchannel(char *name)
+static CHANNEL* findchannel(const char *name)
 {
     CHANNEL *ch;
     int i;
 
-    for(i = 0, ch = channel; i != nchannel; ch++) {
-        if(ch->nclient) {
-            if(!strcmp(name, ch->name)) {
+    for (i = 0, ch = channel; i != nchannel; ch++) {
+        if (ch->nclient) {
+            if (!strcmp(name, ch->name))
                 return ch;
-            }
             i++;
         }
     }
@@ -109,12 +115,12 @@ static bool addclient(CHANNEL *ch, uint16_t id)
     uint16_t *tmp;
 
     tmp = realloc(ch->client, (ch->nclient + 1) * sizeof(*ch->client));
-    if(!tmp) {
+    if (!tmp)
         return 0;
-    }
 
     ch->client = tmp;
-    ch->client[ch->nclient++] = id;
+    ch->client[ch->nclient] = id;
+    ch->nclient++;
 
     return 1;
 }
@@ -123,72 +129,76 @@ static void removeclient(CHANNEL *ch, uint16_t id)
 {
     int i;
 
-    if(ch->nclient == 1) {
-        if(ch->client[0] != id) {
+    if (ch->nclient == 1) {
+        /* if(ch->client[0] != id) {
             printf("snh2\n");
             return;
-        }
+        } */
+
+        /* Don't need to free - will get realloc'd
+        free(ch->client); ch->client = NULL */
 
         ch->nclient = 0;
-        free(ch->client);
-        fchannel = ch;
+
         nchannel--;
+        if (ch < free_channel)
+            free_channel = ch;
+
         return;
     }
 
-    for(i = 0; i != ch->nclient; i++) {
-        if(ch->client[i] == id) {
+    for (i = 0; i != ch->nclient; i++) {
+        if (ch->client[i] == id) {
             ch->nclient--;
             memmove(&ch->client[i], &ch->client[i + 1], (ch->nclient - i) * sizeof(*ch->client));
             return;
         }
     }
 
-    printf("snh1\n");
+    /* printf("snh1\n"); */
 }
 
-static void sendpart(CLIENT *cl, CHANNEL *ch, char *buf, char *reason)
+static void sendpart(const CLIENT *cl, const CHANNEL *ch, char *buf, const char *reason)
 {
     int len, i;
     CLIENT *c;
 
     len = sprintf(buf, ":%s PART %s %s\n", cl->name, ch->name, reason);
-    for(i = 0; i != ch->nclient; i++) {
+    for (i = 0; i != ch->nclient; i++) {
         c = &client[ch->client[i]];
         send(c->sock, buf, len, 0);
     }
-}
-
-static CLIENT* findclient(char *name)
-{
-    CLIENT *cl;
-    int i;
-
-    for(cl = client, i = 0; i != nclient; cl++) {
-        if(cl->sock) {
-            if(!strcmp(cl->name, name)) {
-                return cl;
-            }
-            i++;
-        }
-    }
-
-    return NULL;
 }
 
 static CLIENT* newclient(void)
 {
     CLIENT *cl;
 
-    if(nclient == sizeof(client) / sizeof(*client)) {
+    if (nclient == MAX_CLIENT)
         return NULL;
-    }
 
-    cl = fclient;
-    while((++fclient)->sock != 0); //NOTE: should use -1 as invalid value, but using 0 because lazy
+    cl = free_client;
     nclient++;
 
+    while ((++free_client)->sock);
+
     return cl;
+}
+
+static CLIENT* findclient(const char *name)
+{
+    CLIENT *cl;
+    int i;
+
+    for (cl = client, i = 0; i != nclient; cl++) {
+        if (cl->sock) {
+            if (!strcmp(cl->name, name))
+                return cl;
+            i++;
+        }
+    }
+
+    return NULL;
 }
 
 static void killclient(CLIENT *cl)
@@ -198,14 +208,10 @@ static void killclient(CLIENT *cl)
     CHANNEL *ch;
     char buf[1024];
 
-    if(cl < fclient) {
-        fclient = cl;
-    }
-
     id = (cl - client);
     close(cl->sock); cl->sock = 0;
 
-    for(i = 0; i != cl->nchannel; i++) {
+    for (i = 0; i != cl->nchannel; i++) {
         ch = &channel[cl->channel[i]];
         removeclient(ch, id);
         sendpart(cl, ch, buf, "timeout/quit");
@@ -214,7 +220,10 @@ static void killclient(CLIENT *cl)
     cl->nchannel = 0;
     cl->name[0] = 0;
     free(cl->data); cl->rlen = 0;
+
     nclient--;
+    if (cl < free_client)
+        free_client = cl;
 }
 
 #define match(word, list) _match(word, list, sizeof(list)/sizeof(*list) - 1)
@@ -222,10 +231,9 @@ static int _match(const char *word, const char **list, int i)
 {
     /* i is index of last valid string in the list */
     do {
-        if(!strcmp(word, list[i])) {
+        if (!strcmp(word, list[i]))
             return i;
-        }
-    } while(i--);
+    } while (i--);
     return -1;
 }
 
@@ -236,40 +244,37 @@ static bool isvalid(char c)
 
 static char* channel_name(char *p)
 {
-    if(*p != '#') {
+    if(*p != '#')
         return NULL;
-    }
 
-    while(isvalid(*(++p)));
+    while (isvalid(*(++p)));
     *p = 0;
 
-    while(p++, *p && *p != '#');
+    while (p++, *p && *p != '#');
 
     return p;
 }
 
-static bool validnick(char *p)
+static bool validnick(const char *p)
 {
-    if(!*p) { //empty nick
+    if(!*p) /* empty nick */
         return 0;
-    }
 
     do {
-        if(!isvalid(*p)) {
+        if (!isvalid(*p))
             return 0;
-        }
-    } while(*(++p));
+    } while (*(++p));
 
     return 1;
 }
 
-static bool inchannelrange(CLIENT *cl, CLIENT *c, int range)
+static bool inchannelrange(const CLIENT *cl, const CLIENT *c, int range)
 {
     int i, j;
 
-    for(i = 0; i != range; i++) {
-        for(j = 0; j != c->nchannel; j++) {
-            if(c->channel[j] == cl->channel[i]) {
+    for (i = 0; i != range; i++) {
+        for (j = 0; j != c->nchannel; j++) {
+            if (c->channel[j] == cl->channel[i]) {
                 return 1;
             }
         }
@@ -278,13 +283,14 @@ static bool inchannelrange(CLIENT *cl, CLIENT *c, int range)
     return 0;
 }
 
-static bool inchannel(CLIENT *cl, CHANNEL *ch) {
+static bool inchannel(const CLIENT *cl, const CHANNEL *ch)
+{
     int i;
     uint8_t ch_id;
 
     ch_id = (ch - channel);
-    for(i = 0; i != cl->nchannel; i++) {
-        if(cl->channel[i] == ch_id) {
+    for (i = 0; i != cl->nchannel; i++) {
+        if (cl->channel[i] == ch_id) {
             return 1;
         }
     }
