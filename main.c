@@ -29,6 +29,7 @@
 
 /* notes:
 -using 0 as no-socket value instead of ~0
+-rework message "switch"
 */
 
 typedef struct {
@@ -36,7 +37,8 @@ typedef struct {
     uint16_t rlen;
     uint8_t nchannel, pinged;
     char *data;
-    char name[16];
+    uint8_t oper;
+    char name[15];
     uint8_t channel[32];
 } CLIENT;
 
@@ -65,11 +67,11 @@ static const struct itimerspec itimer = {
 };
 
 enum {
-    MSG_NICK, MSG_JOIN, MSG_PART, MSG_PING, MSG_PRIV, MSG_QUIT,
+    MSG_NICK, MSG_JOIN, MSG_OPER, MSG_PART, MSG_PING, MSG_PRIV, MSG_QUIT,
 };
 
 static const char *messages[] = {
-    "NICK", "JOIN", "PART", "PING", "PRIVMSG", "QUIT",
+    "NICK", "JOIN", "OPER", "PART", "PING", "PRIVMSG", "QUIT",
 };
 
 static const char ping[] = "PING :0\n";
@@ -221,6 +223,7 @@ static void killclient(CLIENT *cl)
         sendpart(cl, ch, buf, "timeout/quit");
     }
 
+    cl->oper = 0;
     cl->nchannel = 0;
     cl->name[0] = 0;
     free(cl->data); cl->rlen = 0;
@@ -316,30 +319,26 @@ static void cl_cmd(CLIENT *cl, char *cmd)
     cl->pinged = 0;
 
     args = strchr(cmd, ' ');
-    if(!args) {
+    if (!args)
         return;
-    }
     *args++ = 0;
 
     //printf("%s %s\n", cmd, args);
 
     msg = match(cmd, messages);
-    if(msg < 0) {
+    if (msg < 0)
         return;
-    }
 
-    if(!cl->name[0] && msg != MSG_NICK) {
+    if (!cl->name[0] && msg != MSG_NICK)
         return;
-    }
 
-    if(msg == MSG_PRIV) {
+    if (msg == MSG_PRIV) {
         a = strchr(args, ' ');
-        if(!a) {
+        if (!a)
             return;
-        }
         *a++ = 0;
 
-        if(*args != '#') {
+        if (*args != '#') {
             c = findclient(args);
             if(c) {
                 len = sprintf(response, ":%s PRIVMSG %s %s\n", cl->name, c->name, a);
@@ -349,52 +348,45 @@ static void cl_cmd(CLIENT *cl, char *cmd)
         }
 
         ch = findchannel(args);
-        if(!ch) {
+        if (!ch)
             return;
-        }
 
         len = sprintf(response, ":%s PRIVMSG %s %s\n", cl->name, ch->name, a);
-        for(i = 0; i != ch->nclient; i++) {
+        for (i = 0; i != ch->nclient; i++) {
             c = &client[ch->client[i]];
-            if(c == cl) {
+            if (c == cl)
                 continue;
-            }
             send(c->sock, response, len, 0);
         }
     } else if(msg == MSG_NICK) {
-        if(strlen(args) >= sizeof(cl->name)) {
+        if (strlen(args) >= sizeof(cl->name))
             args[sizeof(cl->name) - 1] = 0;
-        }
 
-        if(!validnick(args)) {
+        if (!validnick(args))
             return;
-        }
 
-        if(!strcmp(cl->name, args)) {
+        if (!strcmp(cl->name, args))
             return;
-        }
 
-        if(findclient(args)) {
+        if (findclient(args)) {
             len = sprintf(response, ":" HOST " 433 %s %s\n", args, args);
             send(cl->sock, response, len, 0);
             return;
         }
 
-        if(cl->name[0]) { /* not first time setting name */
+        if (cl->name[0]) { /* not first time setting name */
             len = sprintf(response, ":%s NICK %s\n", cl->name, args);
-            if(!cl->nchannel) {
+            if (!cl->nchannel)
                 send(cl->sock, response, len, 0);
-            }
 
-            for(i = 0; i != cl->nchannel; i++) {
+            for (i = 0; i != cl->nchannel; i++) {
                 ch = &channel[cl->channel[i]];
-                for(j = 0; j != ch->nclient; j++) {
+                for (j = 0; j != ch->nclient; j++) {
                     c = &client[ch->client[j]];
 
                     /* check if c is in one of the channels already notified (cl->channel[0-i]) */
-                    if(inchannelrange(cl, c, i)) {
+                    if (inchannelrange(cl, c, i))
                         continue;
-                    }
 
                     send(c->sock, response, len, 0);
                 }
@@ -408,37 +400,29 @@ static void cl_cmd(CLIENT *cl, char *cmd)
         }
 
         strcpy(cl->name, args);
-    } else if(msg == MSG_JOIN) {
-        while((a = channel_name(args))) {
-            if(cl->nchannel == sizeof(cl->channel)) {
-                /* joined max channels */
+    } else if (msg == MSG_JOIN) {
+        while ((a = channel_name(args))) {
+            if (cl->nchannel == sizeof(cl->channel)) /* joined max channels */
                 return;
-            }
 
             name = args;
             args = a;
 
-            printf("join: %s\n", name);
-
             ch = findchannel(name);
-            if(ch) {
-                if(inchannel(cl, ch)) {
+            if (ch) {
+                if (inchannel(cl, ch))
                     continue;
-                }
 
-                if(!addclient(ch, id)) {
+                if (!addclient(ch, id))
                     continue;
-                }
             } else {
                 tmp = malloc(sizeof(*ch->client));
-                if(!tmp) {
+                if (!tmp)
                     continue;
-                }
 
                 ch = newchannel();
-                if(!ch) {
+                if (!ch)
                     continue;
-                }
 
                 ch->nclient = 1;
                 ch->client = tmp;
@@ -446,18 +430,30 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 strncpy(ch->name, name, sizeof(ch->name) - 1);
             }
 
-            cl->channel[cl->nchannel++] = (ch - channel);
+            cl->channel[cl->nchannel] = (ch - channel);
+            cl->nchannel++;
 
-            len = sprintf(response, ":%s JOIN %s\n", cl->name, ch->name);
-            r = response + len;
-            r += sprintf(r, ":" HOST " 353 %s @ %s :%s", cl->name, ch->name, cl->name);
+            r = response;
+            *r++ = ':';
+            if (cl->oper)
+                *r++ = '@';
+            r += sprintf(r, "%s JOIN %s\n", cl->name, ch->name);
+            len = r - response;
 
-            for(i = 0; i != ch->nclient; i++) {
+            r += sprintf(r, ":" HOST " 353 %s @ %s :", cl->name, ch->name);
+            if (cl->oper)
+                *r++ = '@';
+            r += sprintf(r, "%s", cl->name);
+
+            for (i = 0; i != ch->nclient; i++) {
                 c = &client[ch->client[i]];
-                if(c == cl) {
+                if (c == cl)
                     continue;
-                }
-                r += sprintf(r, " %s", c->name);
+
+                *r++ = ' ';
+                if (c->oper)
+                    *r++ = '@';
+                r += sprintf(r, "%s", c->name);
 
                 send(c->sock, response, len, 0);
             }
@@ -466,18 +462,22 @@ static void cl_cmd(CLIENT *cl, char *cmd)
             len = sprintf(r, ":" HOST " 366 %s %s :End of NAMES list.\n", cl->name, ch->name);
             r += len;
 
-            send(cl->sock, response, r - response, 0);
+            if (cl->oper) {
+                response[1] = ':';
+                send(cl->sock, response + 1, r - response - 1, 0);
+            } else {
+                send(cl->sock, response, r - response, 0);
+            }
         }
-    } else if(msg == MSG_PART) {
+    } else if (msg == MSG_PART) {
         a = strchr(args, ' ');
-        if(!a) {
+        if (!a)
             return;
-        }
         *a++ = 0;
 
-        for(i = 0; i != cl->nchannel; i++) {
+        for (i = 0; i != cl->nchannel; i++) {
             ch = &channel[cl->channel[i]];
-            if(!strcmp(args, ch->name)) {
+            if (!strcmp(args, ch->name)) {
                 cl->nchannel--;
                 memcpy(&cl->channel[i], &cl->channel[i + 1], (cl->nchannel - i) * sizeof(*cl->channel));
                 removeclient(ch, id);
@@ -486,9 +486,14 @@ static void cl_cmd(CLIENT *cl, char *cmd)
                 break;
             }
         }
-    } else if(msg == MSG_PING) {
+    } else if (msg == MSG_PING) {
         len = sprintf(response, ":" HOST " PONG %s\n", args);
         send(cl->sock, response, len, 0);
+    } else if (msg == MSG_OPER) {
+#ifdef SECRET
+        if (!strcmp(args, SECRET))
+            cl->oper = 1;
+#endif
     }
 }
 
@@ -497,21 +502,20 @@ static int tcp_init(void)
     int sock, r;
 
     sock = socket(AF_INET, SOCK_STREAM, 0);
-    if(sock < 0) {
+    if (sock < 0)
         return sock;
-    }
 
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, (void*)&one, sizeof(int));
 
     r = bind(sock, (struct sockaddr*)&addr, sizeof(addr));
-    if(r < 0) {
+    if (r < 0) {
         printf("bind() failed\n");
         close(sock);
         return r;
     }
 
     r = listen(sock, SOMAXCONN);
-    if(r < 0) {
+    if (r < 0) {
         close(sock);
         return r;
     }
@@ -530,19 +534,18 @@ int main(int argc, char *argv[])
     char *start, *end, *data;
 
     sock = tcp_init();
-    if(sock < 0) {
+    if (sock < 0)
         return 1;
-    }
 
-    if((tfd = timerfd_create(CLOCK_MONOTONIC, 0)) < 0) {
+    tfd = timerfd_create(CLOCK_MONOTONIC, 0);
+    if (tfd < 0)
         goto EXIT_CLOSE_SOCK;
-    }
 
     timerfd_settime(tfd, 0, &itimer, NULL);
 
-    if((efd = epoll_create(1)) < 0) {
+    efd = epoll_create(1);
+    if (efd < 0)
         goto EXIT_CLOSE_TFD;
-    }
 
     ev = &events[0];
     ev->events = EPOLLIN;
